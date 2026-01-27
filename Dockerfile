@@ -24,7 +24,7 @@ ARG UID=0
 ARG GID=0
 
 ######## WebUI frontend ########
-FROM --platform=$BUILDPLATFORM node:22-alpine3.20 AS build
+FROM --platform=$BUILDPLATFORM ubuntu:24.04 AS build
 ARG BUILD_HASH
 
 # Set Node.js options (heap limit Allocation failed - JavaScript heap out of memory)
@@ -32,8 +32,13 @@ ARG BUILD_HASH
 
 WORKDIR /app
 
-# to store git revision in build
-RUN apk add --no-cache git
+# Install Node.js 22 and git
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    curl ca-certificates gnupg git && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
 RUN npm ci --force
@@ -43,7 +48,7 @@ ENV APP_BUILD_HASH=${BUILD_HASH}
 RUN npm run build
 
 ######## WebUI backend ########
-FROM python:3.11.14-slim-bookworm AS base
+FROM ubuntu:24.04 AS base
 
 # Use args
 ARG USE_CUDA
@@ -112,9 +117,9 @@ ENV HOME=/root
 # Create user and group if not root
 RUN if [ $UID -ne 0 ]; then \
     if [ $GID -ne 0 ]; then \
-    addgroup --gid $GID app; \
+    groupadd --gid $GID app; \
     fi; \
-    adduser --uid $UID --gid $GID --home $HOME --disabled-password --no-create-home app; \
+    useradd --uid $UID --gid $GID --home $HOME --no-create-home --shell /bin/bash app; \
     fi
 
 RUN mkdir -p $HOME/.cache/chroma
@@ -123,13 +128,28 @@ RUN echo -n 00000000-0000-0000-0000-000000000000 > $HOME/.cache/chroma/telemetry
 # Make sure the user has access to the app and root directory
 RUN chown -R $UID:$GID /app $HOME
 
-# Install common system dependencies
+# Install Python 3.11 and common system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+    software-properties-common && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+    python3.11 python3.11-dev python3.11-distutils \
     git build-essential pandoc gcc netcat-openbsd curl jq \
-    python3-dev \
     ffmpeg libsm6 libxext6 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install pip for Python 3.11
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+
+# Create symlinks for python and pip
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+# Create pip3 wrapper (get-pip.py installs pip, but location may vary)
+RUN echo '#!/bin/bash\npython3.11 -m pip "$@"' > /usr/bin/pip3 && \
+    chmod +x /usr/bin/pip3
 
 # install python dependencies
 COPY --chown=$UID:$GID ./backend/requirements.txt ./requirements.txt
@@ -172,6 +192,8 @@ RUN if [ "$USE_OLLAMA" = "true" ]; then \
 COPY --chown=$UID:$GID --from=build /app/build /app/build
 COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md
 COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
+COPY --chown=$UID:$GID ./get_chats.sh /app/get_chats.sh
+COPY --chown=$UID:$GID ./message_chat.sh /app/message_chat.sh
 
 # copy backend files
 COPY --chown=$UID:$GID ./backend .

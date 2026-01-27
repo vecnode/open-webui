@@ -702,6 +702,8 @@ def get_event_emitter(request_info, update_db=True):
         chat_id = request_info["chat_id"]
         message_id = request_info["message_id"]
 
+        room = f"user:{user_id}"
+        log.info(f"Socket.IO emit: event='events', room='{room}', chat_id='{chat_id}', message_id='{message_id}', type='{event_data.get('type', 'unknown')}'")
         await sio.emit(
             "events",
             {
@@ -709,8 +711,9 @@ def get_event_emitter(request_info, update_db=True):
                 "message_id": message_id,
                 "data": event_data,
             },
-            room=f"user:{user_id}",
+            room=room,
         )
+        log.info(f"Socket.IO emit completed for room '{room}'")
         if (
             update_db
             and message_id

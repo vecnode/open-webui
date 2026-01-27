@@ -189,6 +189,11 @@ export const convertMessagesToHistory = (messages) => {
 		currentId: null
 	};
 
+	// Handle edge cases: undefined, null, or non-array inputs
+	if (!messages || !Array.isArray(messages) || messages.length === 0) {
+		return history;
+	}
+
 	let parentMessageId = null;
 	let messageId = null;
 

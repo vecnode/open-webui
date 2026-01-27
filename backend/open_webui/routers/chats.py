@@ -1065,12 +1065,150 @@ async def send_chat_message_event_by_id(
 
     try:
         if event_emitter:
+            log.info(f"Emitting Socket.IO event to room user:{user.id}, chat_id: {id}, type: {form_data.type}")
             await event_emitter(form_data.model_dump())
+            log.info(f"Socket.IO event emitted successfully to room user:{user.id}")
         else:
+            log.warning(f"Event emitter is None for user:{user.id}, chat_id: {id}")
             return False
         return True
-    except:
+    except Exception as e:
+        log.exception(f"Error emitting Socket.IO event: {e}")
         return False
+
+
+############################
+# AddMessageToChatById
+# Internal endpoint for adding messages to chats via API
+############################
+class AddMessageForm(BaseModel):
+    content: str
+
+
+@router.post("/{id}/messages/add", response_model=Optional[dict])
+async def add_message_to_chat_by_id(
+    id: str,
+    form_data: AddMessageForm,
+    request: Request,
+    user=Depends(get_verified_user),
+    db: Session = Depends(get_session),
+):
+    """
+    Add a new user message to a chat.
+    Creates the message, updates the chat history, and emits Socket.IO events for real-time UI updates.
+    """
+    chat = Chats.get_chat_by_id(id, db=db)
+
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    # Check access: user must own the chat or be admin
+    if chat.user_id != user.id and user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    try:
+        import uuid
+        import time
+
+        # Get chat data
+        chat_data = chat.chat or {}
+        history = chat_data.get("history", {})
+        messages = history.get("messages", {})
+
+        # Generate new message ID
+        message_id = str(uuid.uuid4())
+        timestamp = int(time.time())
+
+        # Get the current last message (if any) to set as parent
+        current_id = history.get("currentId")
+        parent_id = None
+
+        if current_id and current_id in messages:
+            parent_id = current_id
+            # Add this new message as a child of the parent
+            if "childrenIds" not in messages[parent_id]:
+                messages[parent_id]["childrenIds"] = []
+            messages[parent_id]["childrenIds"].append(message_id)
+
+        # Create the new user message
+        new_message = {
+            "id": message_id,
+            "role": "user",
+            "content": form_data.content,
+            "parentId": parent_id,
+            "childrenIds": [],
+            "timestamp": timestamp,
+        }
+
+        # Add message to history
+        messages[message_id] = new_message
+        history["messages"] = messages
+        history["currentId"] = message_id
+
+        # Update chat data - preserve all existing fields
+        chat_data["history"] = history
+        if "updated_at" not in chat_data:
+            chat_data["updated_at"] = timestamp
+
+        # Update the chat in the database
+        updated_chat = Chats.update_chat_by_id(id, chat_data, db=db)
+
+        if not updated_chat:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update chat",
+            )
+
+        # Emit Socket.IO events for real-time UI updates
+        event_emitter = get_event_emitter(
+            {
+                "user_id": chat.user_id,
+                "chat_id": id,
+                "message_id": message_id,
+            },
+            update_db=False,  # Don't update DB again, we already did
+        )
+
+        if event_emitter:
+            # Emit chat:message event to update the specific message
+            await event_emitter(
+                {
+                    "type": "chat:message",
+                    "data": {
+                        "chat_id": id,
+                        "message_id": message_id,
+                        "content": form_data.content,
+                    },
+                }
+            )
+
+            # Emit chat:tags event to trigger full chat refetch (ensures UI updates)
+            await event_emitter(
+                {
+                    "type": "chat:tags",
+                    "data": None,
+                }
+            )
+
+        return {
+            "success": True,
+            "message_id": message_id,
+            "chat_id": id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error adding message: {str(e)}",
+        )
 
 
 ############################

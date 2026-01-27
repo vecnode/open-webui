@@ -166,6 +166,13 @@
 
 	const navigateHandler = async () => {
 		loading = true;
+		
+		// Ensure handler is registered when navigating to a new chat
+		if ($socket) {
+			console.log('DEBUG: Navigating to chat, re-registering handler for chatIdProp:', chatIdProp);
+			$socket.off('events', chatEventHandler);
+			$socket.on('events', chatEventHandler);
+		}
 
 		prompt = '';
 		messageInput?.setText('');
@@ -349,11 +356,261 @@
 	};
 
 	const chatEventHandler = async (event, cb) => {
-		console.log(event);
+		console.log('DEBUG: Chat component chatEventHandler called!', {
+			event_chat_id: event?.chat_id,
+			event_type: event?.data?.type,
+			current_url: typeof window !== 'undefined' ? window.location.pathname : 'N/A',
+			chatIdProp,
+			chatId_store: $chatId
+		});
 
-		if (event.chat_id === $chatId) {
+		// Normalize both chat IDs for robust comparison (handle type/format differences)
+		const eventChatId = String(event.chat_id || '').trim();
+		// Check multiple sources: chatIdProp (from route), $chatId (from store), and URL pathname
+		const routeChatId = String(chatIdProp || '').trim();
+		const storeChatId = String($chatId || '').trim();
+		// Also extract chat ID from current URL pathname as fallback
+		const urlPathMatch = $page.url.pathname.match(/\/c\/([^\/]+)/);
+		const urlChatId = urlPathMatch ? String(urlPathMatch[1] || '').trim() : '';
+		// Match if event chat_id matches any of: route parameter, store value, or URL pathname
+		const chatIdsMatch = eventChatId === routeChatId || eventChatId === storeChatId || eventChatId === urlChatId;
+		
+		// For chat:tags events, also check if we're viewing this chat by URL (more lenient check)
+		const type = event?.data?.type ?? null;
+		const isChatTagsEvent = type === 'chat:tags';
+		// More robust URL check - extract chat ID from URL and compare
+		const currentUrlPath = typeof window !== 'undefined' ? window.location.pathname : $page.url.pathname;
+		const isViewingChatByUrl = eventChatId && currentUrlPath.includes(`/c/${eventChatId}`);
+		// For chat:tags events, always process if we're viewing that chat by URL (most lenient check)
+		// Also check if we're on a chat page at all (even if IDs don't match exactly)
+		const isOnChatPage = currentUrlPath.includes('/c/');
+		const shouldProcessEvent = chatIdsMatch || (isChatTagsEvent && isViewingChatByUrl) || (isChatTagsEvent && isOnChatPage && !chatIdProp);
+
+		if (!shouldProcessEvent) {
+			console.log('DEBUG: Event chat_id does NOT match current chat_id.', {
+				event_chat_id: eventChatId,
+				route_chat_id: routeChatId,
+				store_chat_id: storeChatId,
+				url_chat_id: urlChatId,
+				current_url: currentUrlPath,
+				page_url: $page.url.pathname,
+				window_url: typeof window !== 'undefined' ? window.location.pathname : 'N/A',
+				event_chat_id_type: typeof event.chat_id,
+				route_chat_id_type: typeof chatIdProp,
+				store_chat_id_type: typeof $chatId,
+				event_chat_id_length: eventChatId.length,
+				route_chat_id_length: routeChatId.length,
+				store_chat_id_length: storeChatId.length,
+				url_chat_id_length: urlChatId.length,
+				is_chat_tags: isChatTagsEvent,
+				is_viewing_by_url: isViewingChatByUrl,
+				url_includes_chat: eventChatId ? currentUrlPath.includes(`/c/${eventChatId}`) : false
+			});
+			return;
+		}
+
+		if (shouldProcessEvent) {
+			console.log('DEBUG: Event matches current chat_id, processing...', {
+				event_chat_id: eventChatId,
+				route_chat_id: routeChatId,
+				store_chat_id: storeChatId,
+				url_chat_id: urlChatId,
+				chat_ids_match: chatIdsMatch,
+				is_chat_tags: isChatTagsEvent,
+				is_viewing_by_url: isViewingChatByUrl
+			});
 			await tick();
 			let message = history.messages[event.message_id];
+			console.log('DEBUG: Event type:', type, 'Message exists in history:', !!message, 'Message ID:', event.message_id);
+
+			// Use the matching chat ID (prefer route, then URL, then store, then event chat_id for consistency)
+			// For chat:tags events matched by URL, use eventChatId directly
+			// Final fallback: use eventChatId for chat:tags events if we're viewing that chat
+			// If we're on a chat page but chatIdProp is empty, use eventChatId as fallback
+			let matchingChatId = routeChatId || urlChatId || storeChatId;
+			if (!matchingChatId && isChatTagsEvent) {
+				// For chat:tags events, use eventChatId if we're viewing that chat by URL
+				if (isViewingChatByUrl) {
+					matchingChatId = eventChatId;
+				} else if (isOnChatPage && !chatIdProp) {
+					// If we're on a chat page but chatIdProp is empty, try eventChatId
+					matchingChatId = eventChatId;
+				} else {
+					// Final fallback: use eventChatId for any chat:tags event
+					matchingChatId = eventChatId;
+				}
+			}
+
+			// Handle chat:tags event which triggers full refetch (for external message updates)
+			if (type === 'chat:tags') {
+				console.log('DEBUG: Processing chat:tags event, refetching chat...', { 
+					matchingChatId, 
+					eventChatId,
+					routeChatId,
+					urlChatId,
+					storeChatId,
+					isViewingChatByUrl,
+					currentUrlPath
+				});
+				if (!matchingChatId) {
+					console.error('DEBUG: No matching chat ID found for chat:tags event!');
+					return;
+				}
+				chat = await getChatById(localStorage.token, matchingChatId);
+				allTags.set(await getAllTags(localStorage.token));
+				
+				// Update history when chat is fetched (needed for external message updates)
+				// For chat:tags events, always update if we fetched a chat and we're viewing a chat page
+				const fetchedChatId = String(chat?.chat?.id || '').trim();
+				// More lenient check: update if we fetched a chat and either:
+				// 1. The fetched chat ID matches the event chat ID, OR
+				// 2. We're viewing a chat page (isOnChatPage) and the fetched chat ID matches any of our chat ID sources, OR
+				// 3. We're on a chat page and the event chat ID is in the URL (most lenient check)
+				const shouldUpdateHistory = chat && chat.chat && (
+					fetchedChatId === eventChatId || 
+					(matchingChatId && fetchedChatId === matchingChatId) ||
+					(isOnChatPage && (fetchedChatId === routeChatId || fetchedChatId === urlChatId || fetchedChatId === storeChatId)) ||
+					(isOnChatPage && isViewingChatByUrl)
+				);
+				
+				console.log('DEBUG: shouldUpdateHistory check:', {
+					shouldUpdateHistory,
+					fetchedChatId,
+					eventChatId,
+					matchingChatId,
+					routeChatId,
+					urlChatId,
+					storeChatId,
+					isOnChatPage,
+					isViewingChatByUrl,
+					currentUrlPath
+				});
+				
+				if (shouldUpdateHistory) {
+					const chatContent = chat.chat;
+					
+					// Check if history exists and has the proper structure (messages object and currentId)
+					const hasValidHistory = 
+						chatContent?.history && 
+						typeof chatContent.history === 'object' &&
+						chatContent.history.messages &&
+						typeof chatContent.history.messages === 'object' &&
+						Object.keys(chatContent.history.messages).length > 0;
+
+					let newHistory;
+					if (hasValidHistory) {
+						// Create a new object reference to trigger Svelte reactivity
+						newHistory = JSON.parse(JSON.stringify(chatContent.history));
+					} else if (chatContent?.messages && Array.isArray(chatContent.messages) && chatContent.messages.length > 0) {
+						// Try to convert messages array to history format
+						newHistory = convertMessagesToHistory(chatContent.messages);
+					} else {
+						// Keep existing history if conversion fails
+						newHistory = history || { messages: {}, currentId: null };
+					}
+					
+					// Mark all messages as done to prevent input blocking
+					// This ensures messages added via script don't block the input
+					if (newHistory && newHistory.currentId) {
+						for (const message of Object.values(newHistory.messages)) {
+							if (message) {
+								// Mark assistant messages as done
+								if (message.role === 'assistant') {
+									message.done = true;
+								}
+								// Also ensure user messages are marked as done if they don't have it
+								// This prevents the UI from thinking we're waiting for a response
+								if (message.role === 'user' && message.done !== true) {
+									message.done = true;
+								}
+							}
+						}
+					}
+					
+					// Ensure generating state is reset to prevent input blocking
+					// This fixes the issue where input gets stuck after receiving messages via script
+					if (generating) {
+						generating = false;
+					}
+					
+					// Trigger Svelte reactivity by assigning a new object reference
+					history = newHistory;
+					
+					console.log('Chat refetched, history updated. Message count:', Object.keys(history.messages).length);
+					
+					// Auto-scroll to bottom if new messages were added
+					if (autoScroll) {
+						await tick();
+						scrollToBottom('smooth');
+					}
+				}
+				return;
+			}
+
+			// Handle chat:message event for new messages that don't exist in local history yet
+			if (type === 'chat:message' && !message) {
+				console.log('DEBUG: Processing chat:message event for new message, refetching chat...');
+				// Message doesn't exist in local history, refetch the chat
+				chat = await getChatById(localStorage.token, matchingChatId);
+				
+				const fetchedChatIdForMessage = String(chat?.chat?.id || '').trim();
+				if (chat && chat.chat && (matchingChatId === fetchedChatIdForMessage || eventChatId === fetchedChatIdForMessage)) {
+					const chatContent = chat.chat;
+					
+					const hasValidHistory = 
+						chatContent?.history && 
+						typeof chatContent.history === 'object' &&
+						chatContent.history.messages &&
+						typeof chatContent.history.messages === 'object' &&
+						Object.keys(chatContent.history.messages).length > 0;
+
+					let newHistory;
+					if (hasValidHistory) {
+						// Create a new object reference to trigger Svelte reactivity
+						newHistory = JSON.parse(JSON.stringify(chatContent.history));
+					} else if (chatContent?.messages && Array.isArray(chatContent.messages) && chatContent.messages.length > 0) {
+						newHistory = convertMessagesToHistory(chatContent.messages);
+					} else {
+						newHistory = history || { messages: {}, currentId: null };
+					}
+					
+					// Mark all messages as done to prevent input blocking
+					// This ensures messages added via script don't block the input
+					if (newHistory && newHistory.currentId) {
+						for (const message of Object.values(newHistory.messages)) {
+							if (message) {
+								// Mark assistant messages as done
+								if (message.role === 'assistant') {
+									message.done = true;
+								}
+								// Also ensure user messages are marked as done if they don't have it
+								// This prevents the UI from thinking we're waiting for a response
+								if (message.role === 'user' && message.done !== true) {
+									message.done = true;
+								}
+							}
+						}
+					}
+					
+					// Ensure generating state is reset to prevent input blocking
+					// This fixes the issue where input gets stuck after receiving messages via script
+					if (generating) {
+						generating = false;
+					}
+					
+					// Trigger Svelte reactivity by assigning a new object reference
+					history = newHistory;
+					
+					console.log('Chat refetched after new message, history updated. Message count:', Object.keys(history.messages).length);
+					
+					// Auto-scroll to bottom to show new message
+					if (autoScroll) {
+						await tick();
+						scrollToBottom('smooth');
+					}
+				}
+				return;
+			}
 
 			if (message) {
 				const type = event?.data?.type ?? null;
@@ -397,9 +654,6 @@
 					chatTitle.set(data);
 					currentChatPage.set(1);
 					await chats.set(await getChatList(localStorage.token, $currentChatPage));
-				} else if (type === 'chat:tags') {
-					chat = await getChatById(localStorage.token, $chatId);
-					allTags.set(await getAllTags(localStorage.token));
 				} else if (type === 'source' || type === 'citation') {
 					if (data?.type === 'code_execution') {
 						// Code execution; update existing code execution by ID, or add new one.
@@ -540,6 +794,7 @@
 	let pageSubscribe = null;
 	let showControlsSubscribe = null;
 	let selectedFolderSubscribe = null;
+	let socketSubscribe = null;
 
 	const stopAudio = () => {
 		try {
@@ -548,11 +803,26 @@
 		} catch {}
 	};
 
+	// Reactive handler registration - ensures handler is registered when socket becomes available
+	$: if ($socket) {
+		console.log('DEBUG: Socket available, registering Chat component event handler for socket:', $socket.id);
+		$socket.off('events', chatEventHandler); // Remove any existing handler first
+		$socket.on('events', chatEventHandler);
+	}
+
 	onMount(async () => {
 		loading = true;
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
-		$socket?.on('events', chatEventHandler);
+		
+		// Subscribe to socket store to ensure handler is registered when socket becomes available
+		socketSubscribe = socket.subscribe((socketInstance) => {
+			if (socketInstance) {
+				console.log('DEBUG: Socket store updated, registering Chat component event handler for socket:', socketInstance.id);
+				socketInstance.off('events', chatEventHandler); // Remove any existing handler first
+				socketInstance.on('events', chatEventHandler);
+			}
+		});
 
 		audioQueue.set(new AudioQueue(document.getElementById('audioElement')));
 
@@ -638,9 +908,10 @@
 
 	onDestroy(() => {
 		try {
-			pageSubscribe();
-			showControlsSubscribe();
-			selectedFolderSubscribe();
+			pageSubscribe?.();
+			showControlsSubscribe?.();
+			selectedFolderSubscribe?.();
+			socketSubscribe?.();
 			chatIdUnsubscriber?.();
 			window.removeEventListener('message', onMessageHandler);
 			$socket?.off('events', chatEventHandler);
@@ -1104,10 +1375,53 @@
 
 				oldSelectedModelIds = JSON.parse(JSON.stringify(selectedModels));
 
-				history =
-					(chatContent?.history ?? undefined) !== undefined
-						? chatContent.history
-						: convertMessagesToHistory(chatContent.messages);
+				// Check if history exists and has the proper structure (messages object and currentId)
+				// This handles cases where chats created via API might have history: null or history: {}
+				const hasValidHistory = 
+					chatContent?.history && 
+					typeof chatContent.history === 'object' &&
+					chatContent.history.messages &&
+					typeof chatContent.history.messages === 'object' &&
+					Object.keys(chatContent.history.messages).length > 0;
+
+				if (hasValidHistory) {
+					history = chatContent.history;
+				} else if (chatContent?.messages && Array.isArray(chatContent.messages) && chatContent.messages.length > 0) {
+					// Try to convert messages array to history format
+					history = convertMessagesToHistory(chatContent.messages);
+				} else {
+					// Initialize empty history structure
+					history = {
+						messages: {},
+						currentId: null
+					};
+				}
+
+				// If messages exist but currentId is null, try to find the last message and set it as currentId
+				// This handles cases where chats created via API have messages but no currentId set
+				if (!history.currentId && history.messages && Object.keys(history.messages).length > 0) {
+					// Find the message with no children (leaf node) or the last message in the chain
+					const messageIds = Object.keys(history.messages);
+					let lastMessageId = null;
+					
+					// First, try to find a message with no childrenIds or empty childrenIds
+					for (const msgId of messageIds) {
+						const msg = history.messages[msgId];
+						if (msg && (!msg.childrenIds || msg.childrenIds.length === 0)) {
+							lastMessageId = msgId;
+							break;
+						}
+					}
+					
+					// If no leaf found, use the last message ID
+					if (!lastMessageId && messageIds.length > 0) {
+						lastMessageId = messageIds[messageIds.length - 1];
+					}
+					
+					if (lastMessageId) {
+						history.currentId = lastMessageId;
+					}
+				}
 
 				chatTitle.set(chatContent.title);
 
@@ -2498,7 +2812,7 @@
 					/>
 
 					<div class="flex flex-col flex-auto z-10 w-full @container overflow-auto">
-						{#if ($settings?.landingPageMode === 'chat' && !$selectedFolder) || createMessagesList(history, history.currentId).length > 0}
+						{#if ($settings?.landingPageMode === 'chat' && !$selectedFolder) || (history?.messages && Object.keys(history.messages).length > 0)}
 							<div
 								class=" pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0 max-w-full z-10 scrollbar-hidden"
 								id="messages-container"

@@ -327,6 +327,7 @@
 	};
 
 	const chatEventHandler = async (event, cb) => {
+		console.log('DEBUG: Global chatEventHandler received event:', event.chat_id, 'Type:', event?.data?.type);
 		const chat = $page.url.pathname.includes(`/c/${event.chat_id}`);
 
 		let isFocused = document.visibilityState !== 'visible';
@@ -721,6 +722,11 @@
 
 				$socket?.on('events', chatEventHandler);
 				$socket?.on('events:channel', channelEventHandler);
+
+				// Ensure user-join is emitted when user is set (handles case where socket connected before auth)
+				if ($socket?.connected && localStorage.getItem('token')) {
+					$socket.emit('user-join', { auth: { token: localStorage.token } });
+				}
 
 				const userSettings = await getUserSettings(localStorage.token);
 				if (userSettings) {

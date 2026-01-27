@@ -106,10 +106,29 @@
 					(chatContent?.models ?? undefined) !== undefined
 						? chatContent.models
 						: [chatContent.models ?? ''];
-				history =
-					(chatContent?.history ?? undefined) !== undefined
-						? chatContent.history
-						: convertMessagesToHistory(chatContent.messages);
+				
+				// Check if history exists and has the proper structure (messages object and currentId)
+				// This handles cases where chats created via API might have history: null or history: {}
+				const hasValidHistory = 
+					chatContent?.history && 
+					typeof chatContent.history === 'object' &&
+					chatContent.history.messages &&
+					typeof chatContent.history.messages === 'object' &&
+					Object.keys(chatContent.history.messages).length > 0;
+
+				if (hasValidHistory) {
+					history = chatContent.history;
+				} else if (chatContent?.messages && Array.isArray(chatContent.messages) && chatContent.messages.length > 0) {
+					// Try to convert messages array to history format
+					history = convertMessagesToHistory(chatContent.messages);
+				} else {
+					// Initialize empty history structure
+					history = {
+						messages: {},
+						currentId: null
+					};
+				}
+				
 				title = chatContent.title;
 
 				autoScroll = true;
