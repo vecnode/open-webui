@@ -1556,6 +1556,64 @@ async def get_chat_tags_by_id(
 
 
 ############################
+# ToggleChatInputById
+############################
+class ChatInputToggleForm(BaseModel):
+    enabled: bool
+
+
+@router.post("/{id}/input/toggle", response_model=Optional[bool])
+async def toggle_chat_input_by_id(
+    id: str,
+    form_data: ChatInputToggleForm,
+    user=Depends(get_verified_user),
+    db: Session = Depends(get_session),
+):
+    chat = Chats.get_chat_by_id(id, db=db)
+
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    if chat.user_id != user.id and user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    event_emitter = get_event_emitter(
+        {
+            "user_id": user.id,
+            "chat_id": id,
+            "message_id": "",
+        },
+        update_db=False,
+    )
+
+    try:
+        if event_emitter:
+            log.info(
+                f"Emitting chat input toggle event to room user:{user.id}, chat_id: {id}, enabled: {form_data.enabled}"
+            )
+            await event_emitter(
+                {
+                    "type": "chat:input:toggle",
+                    "data": {"enabled": form_data.enabled},
+                }
+            )
+            log.info(f"Chat input toggle event emitted successfully to room user:{user.id}")
+        else:
+            log.warning(f"Event emitter is None for user:{user.id}, chat_id: {id}")
+            return False
+        return True
+    except Exception as e:
+        log.exception(f"Error emitting chat input toggle event: {e}")
+        return False
+
+
+############################
 # AddChatTagById
 ############################
 

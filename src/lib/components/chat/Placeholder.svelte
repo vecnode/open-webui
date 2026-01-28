@@ -59,6 +59,7 @@
 	export let onChange = (e) => {};
 
 	export let toolServers = [];
+	export let disabled = false;
 
 	let models = [];
 	let selectedModelIdx = 0;
@@ -214,6 +215,7 @@
 					bind:showCommands
 					{toolServers}
 					{stopResponse}
+					disabled={disabled}
 					{createMessagePair}
 					placeholder={$i18n.t('How can I help you today?')}
 					{onChange}

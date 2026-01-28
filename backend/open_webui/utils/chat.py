@@ -194,6 +194,36 @@ async def generate_chat_completion(
         raise Exception("Model not found")
 
     model = models[model_id]
+    
+    if not model:
+        raise Exception("Model not found")
+
+    # Check if this is a custom model with base_model_id and determine owned_by from base model
+    if model.get("preset"):
+        from open_webui.models.models import Models
+        model_info = Models.get_model_by_id(model_id)
+        if model_info and model_info.base_model_id:
+            base_model_id = model_info.base_model_id
+            # Try exact match first, then try without tag
+            if base_model_id in models:
+                base_model = models[base_model_id]
+            else:
+                # Try matching base name (e.g., "gemma3:27b" -> "gemma3")
+                base_name = base_model_id.split(":")[0] if ":" in base_model_id else base_model_id
+                base_model = None
+                for m_id, m in models.items():
+                    if m_id == base_name or m_id.startswith(base_name + ":"):
+                        base_model = m
+                        break
+            
+            if base_model and isinstance(base_model, dict):
+                model["owned_by"] = base_model.get("owned_by", model.get("owned_by", "openai"))
+                if "connection_type" in base_model:
+                    model["connection_type"] = base_model.get("connection_type", model.get("connection_type"))
+    
+    # Ensure owned_by is set
+    if "owned_by" not in model or not model.get("owned_by"):
+        model["owned_by"] = "openai"
 
     if getattr(request.state, "direct", False):
         return await generate_direct_chat_completion(
@@ -208,8 +238,10 @@ async def generate_chat_completion(
                 raise e
 
         if model.get("owned_by") == "arena":
-            model_ids = model.get("info", {}).get("meta", {}).get("model_ids")
-            filter_mode = model.get("info", {}).get("meta", {}).get("filter_mode")
+            model_info = model.get("info") or {}
+            model_meta = model_info.get("meta") if isinstance(model_info, dict) else {}
+            model_ids = model_meta.get("model_ids") if isinstance(model_meta, dict) else None
+            filter_mode = model_meta.get("filter_mode") if isinstance(model_meta, dict) else None
             if model_ids and filter_mode == "exclude":
                 model_ids = [
                     model["id"]

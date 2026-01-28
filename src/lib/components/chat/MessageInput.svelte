@@ -101,6 +101,7 @@
 
 	export let autoScroll = false;
 	export let generating = false;
+	export let disabled = false;
 
 	export let atSelectedModel: Model | undefined = undefined;
 	export let selectedModels: [''];
@@ -1102,10 +1103,12 @@
 						/>
 					</div>
 					<form
-						class="w-full flex flex-col gap-1.5 {recording ? 'hidden' : ''}"
+						class="w-full flex flex-col gap-1.5 {recording ? 'hidden' : ''} {disabled ? 'opacity-50 pointer-events-none' : ''}"
 						on:submit|preventDefault={() => {
-							// check if selectedModels support image input
-							dispatch('submit', prompt);
+							if (!disabled) {
+								// check if selectedModels support image input
+								dispatch('submit', prompt);
+							}
 						}}
 					>
 						<button
@@ -1276,7 +1279,7 @@
 												<RichTextInput
 													bind:this={chatInputElement}
 													id="chat-input"
-													editable={!showInputModal}
+													editable={!showInputModal && !disabled}
 													onChange={(content) => {
 														prompt = content.md;
 														inputContent = content;

@@ -133,7 +133,8 @@ try:
         "parentId": parent_id,
         "childrenIds": [],
         "timestamp": timestamp,
-        "done": True  # Mark as done to prevent input from getting stuck
+        "done": True,  # Mark as done to prevent input from getting stuck
+        "model": "Assistant 1"  # Placeholder model name for script-created messages
     }
     
     # Add message to history

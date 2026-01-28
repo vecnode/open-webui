@@ -143,6 +143,7 @@
 
 	let generating = false;
 	let generationController = null;
+	let inputDisabled = false;
 
 	let chat = null;
 	let tags = [];
@@ -355,7 +356,7 @@
 		saveChatHandler(_chatId, history);
 	};
 
-	const chatEventHandler = async (event, cb) => {
+		const chatEventHandler = async (event, cb) => {
 		console.log('DEBUG: Chat component chatEventHandler called!', {
 			event_chat_id: event?.chat_id,
 			event_type: event?.data?.type,
@@ -375,8 +376,27 @@
 		// Match if event chat_id matches any of: route parameter, store value, or URL pathname
 		const chatIdsMatch = eventChatId === routeChatId || eventChatId === storeChatId || eventChatId === urlChatId;
 		
-		// For chat:tags events, also check if we're viewing this chat by URL (more lenient check)
+		// Get event type early to handle special cases
 		const type = event?.data?.type ?? null;
+		const isChatInputToggleEvent = type === 'chat:input:toggle';
+		
+		// Handle chat:input:toggle events early - they should work if we're viewing that chat
+		if (isChatInputToggleEvent) {
+			const currentUrlPath = typeof window !== 'undefined' ? window.location.pathname : $page.url.pathname;
+			const isViewingChatByUrl = eventChatId && currentUrlPath.includes(`/c/${eventChatId}`);
+			// Process if chat IDs match OR if we're viewing that chat by URL
+			if (chatIdsMatch || isViewingChatByUrl || (eventChatId && (eventChatId === routeChatId || eventChatId === storeChatId || eventChatId === urlChatId))) {
+				const enabled = event?.data?.data?.enabled ?? true;
+				inputDisabled = !enabled;
+				console.log('DEBUG: Chat input toggled', { enabled, inputDisabled, eventChatId, routeChatId, storeChatId, urlChatId, chatIdsMatch, isViewingChatByUrl });
+				return;
+			} else {
+				console.log('DEBUG: Chat input toggle event ignored - not for current chat', { eventChatId, routeChatId, storeChatId, urlChatId, currentUrlPath });
+				return;
+			}
+		}
+		
+		// For chat:tags events, also check if we're viewing this chat by URL (more lenient check)
 		const isChatTagsEvent = type === 'chat:tags';
 		// More robust URL check - extract chat ID from URL and compare
 		const currentUrlPath = typeof window !== 'undefined' ? window.location.pathname : $page.url.pathname;
@@ -440,6 +460,7 @@
 					matchingChatId = eventChatId;
 				}
 			}
+
 
 			// Handle chat:tags event which triggers full refetch (for external message updates)
 			if (type === 'chat:tags') {
@@ -2867,6 +2888,7 @@
 									bind:showCommands
 									toolServers={$toolServers}
 									{generating}
+									disabled={inputDisabled}
 									{stopResponse}
 									{createMessagePair}
 									{onUpload}
@@ -2909,6 +2931,7 @@
 									bind:showCommands
 									toolServers={$toolServers}
 									{stopResponse}
+									disabled={inputDisabled}
 									{createMessagePair}
 									{onSelect}
 									{onUpload}

@@ -107,7 +107,7 @@ from sqlalchemy.orm import Session
 from open_webui.internal.db import ScopedSession, engine, get_session
 
 from open_webui.models.functions import Functions
-from open_webui.models.models import Models
+from open_webui.models.models import Models, ModelForm, ModelMeta, ModelParams
 from open_webui.models.users import UserModel, Users
 from open_webui.models.chats import Chats
 
@@ -582,6 +582,37 @@ https://github.com/open-webui/open-webui
 )
 
 
+def initialize_assistant_1_model():
+    """Initialize the Assistant 1 model if it doesn't exist."""
+    try:
+        existing_model = Models.get_model_by_id("assistant-1")
+        if existing_model:
+            return
+
+        admin_user = Users.get_super_admin_user()
+        if not admin_user:
+            log.warning("No admin user found, skipping Assistant 1 model creation")
+            return
+
+        model_form = ModelForm(
+            id="assistant-1",
+            name="Assistant 1",
+            base_model_id="gemma3:27b",
+            meta=ModelMeta(
+                description="Assistant 1 model using proxy",
+                profile_image_url="/static/favicon.png"
+            ),
+            params=ModelParams(),
+            access_control=None,
+            is_active=True
+        )
+
+        Models.insert_new_model(model_form, admin_user.id)
+        log.info("Assistant 1 model initialized successfully")
+    except Exception as e:
+        log.error(f"Failed to initialize Assistant 1 model: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.instance_id = INSTANCE_ID
@@ -644,6 +675,8 @@ async def lifespan(app: FastAPI):
             ),
             None,
         )
+
+    initialize_assistant_1_model()
 
     yield
 
@@ -1568,6 +1601,8 @@ async def chat_completion(
 
     model_id = form_data.get("model", None)
     model_item = form_data.pop("model_item", {})
+    if model_item is None:
+        model_item = {}
     tasks = form_data.pop("background_tasks", None)
 
     metadata = {}
@@ -1594,12 +1629,15 @@ async def chat_completion(
             request.state.direct = True
             request.state.model = model
 
-        model_info_params = (
-            model_info.params.model_dump() if model_info and model_info.params else {}
-        )
+        model_info_params = {}
+        if model_info:
+            if model_info.params:
+                model_info_params = model_info.params.model_dump()
+            if model_info.base_model_id:
+                model_info_params["base_model_id"] = model_info.base_model_id
 
         # Check base model existence for custom models
-        if model_info_params.get("base_model_id"):
+        if model_info_params and model_info_params.get("base_model_id"):
             base_model_id = model_info_params.get("base_model_id")
             if base_model_id not in request.app.state.MODELS:
                 if ENABLE_CUSTOM_MODEL_FALLBACK:
@@ -1619,20 +1657,22 @@ async def chat_completion(
                     raise Exception("Model not found")
 
         # Chat Params
-        stream_delta_chunk_size = form_data.get("params", {}).get(
-            "stream_delta_chunk_size"
-        )
-        reasoning_tags = form_data.get("params", {}).get("reasoning_tags")
+        form_params = form_data.get("params") or {}
+        if not isinstance(form_params, dict):
+            form_params = {}
+        stream_delta_chunk_size = form_params.get("stream_delta_chunk_size")
+        reasoning_tags = form_params.get("reasoning_tags")
 
         # Model Params
-        if model_info_params.get("stream_response") is not None:
-            form_data["stream"] = model_info_params.get("stream_response")
+        if model_info_params and isinstance(model_info_params, dict):
+            if model_info_params.get("stream_response") is not None:
+                form_data["stream"] = model_info_params.get("stream_response")
 
-        if model_info_params.get("stream_delta_chunk_size"):
-            stream_delta_chunk_size = model_info_params.get("stream_delta_chunk_size")
+            if model_info_params.get("stream_delta_chunk_size"):
+                stream_delta_chunk_size = model_info_params.get("stream_delta_chunk_size")
 
-        if model_info_params.get("reasoning_tags") is not None:
-            reasoning_tags = model_info_params.get("reasoning_tags")
+            if model_info_params.get("reasoning_tags") is not None:
+                reasoning_tags = model_info_params.get("reasoning_tags")
 
         metadata = {
             "user_id": user.id,
@@ -1648,15 +1688,15 @@ async def chat_completion(
             "features": form_data.get("features", {}),
             "variables": form_data.get("variables", {}),
             "model": model,
-            "direct": model_item.get("direct", False),
+            "direct": model_item.get("direct", False) if model_item else False,
             "params": {
                 "stream_delta_chunk_size": stream_delta_chunk_size,
                 "reasoning_tags": reasoning_tags,
                 "function_calling": (
                     "native"
                     if (
-                        form_data.get("params", {}).get("function_calling") == "native"
-                        or model_info_params.get("function_calling") == "native"
+                        form_params.get("function_calling") == "native"
+                        or (model_info_params and model_info_params.get("function_calling") == "native")
                     )
                     else "default"
                 ),

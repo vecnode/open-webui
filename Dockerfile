@@ -194,6 +194,7 @@ COPY --chown=$UID:$GID --from=build /app/CHANGELOG.md /app/CHANGELOG.md
 COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
 COPY --chown=$UID:$GID ./get_chats.sh /app/get_chats.sh
 COPY --chown=$UID:$GID ./message_chat.sh /app/message_chat.sh
+COPY --chown=$UID:$GID ./change_chat_input.sh /app/change_chat_input.sh
 
 # copy backend files
 COPY --chown=$UID:$GID ./backend .

@@ -1482,7 +1482,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Model "Knowledge" handling
     user_message = get_last_user_message(form_data["messages"])
-    model_knowledge = model.get("info", {}).get("meta", {}).get("knowledge", False)
+    model_info = model.get("info") or {}
+    model_meta = model_info.get("meta") if isinstance(model_info, dict) else {}
+    model_knowledge = model_meta.get("knowledge", False) if isinstance(model_meta, dict) else False
 
     if (
         model_knowledge
@@ -1807,12 +1809,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Inject builtin tools for native function calling based on enabled features and model capability
     # Check if builtin_tools capability is enabled for this model (defaults to True if not specified)
-    builtin_tools_enabled = (
-        model.get("info", {})
-        .get("meta", {})
-        .get("capabilities", {})
-        .get("builtin_tools", True)
-    )
+    model_info = model.get("info") or {}
+    model_meta = model_info.get("meta") if isinstance(model_info, dict) else {}
+    model_capabilities = model_meta.get("capabilities") if isinstance(model_meta, dict) else {}
+    builtin_tools_enabled = model_capabilities.get("builtin_tools", True) if isinstance(model_capabilities, dict) else True
     if (
         metadata.get("params", {}).get("function_calling") == "native"
         and builtin_tools_enabled
@@ -1855,12 +1855,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 log.exception(e)
 
     # Check if file context extraction is enabled for this model (default True)
-    file_context_enabled = (
-        model.get("info", {})
-        .get("meta", {})
-        .get("capabilities", {})
-        .get("file_context", True)
-    )
+    model_info = model.get("info") or {}
+    model_meta = model_info.get("meta") if isinstance(model_info, dict) else {}
+    model_capabilities = model_meta.get("capabilities") if isinstance(model_meta, dict) else {}
+    file_context_enabled = model_capabilities.get("file_context", True) if isinstance(model_capabilities, dict) else True
 
     if file_context_enabled:
         try:

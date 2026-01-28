@@ -825,7 +825,9 @@ async def generate_chat_completion(
             payload["model"] = base_model_id
             model_id = base_model_id
 
-        params = model_info.params.model_dump()
+        params = {}
+        if model_info.params:
+            params = model_info.params.model_dump()
 
         if params:
             system = params.pop("system", None)
@@ -857,9 +859,19 @@ async def generate_chat_completion(
             )
 
     await get_all_models(request, user=user)
+    if not request.app.state.OPENAI_MODELS:
+        raise HTTPException(
+            status_code=404,
+            detail="Model not found",
+        )
     model = request.app.state.OPENAI_MODELS.get(model_id)
     if model:
-        idx = model["urlIdx"]
+        idx = model.get("urlIdx")
+        if idx is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Model not found",
+            )
     else:
         raise HTTPException(
             status_code=404,
@@ -867,19 +879,23 @@ async def generate_chat_completion(
         )
 
     # Get the API config for the model
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(
-            request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
-        ),  # Legacy support
-    )
+    api_config = {}
+    if request.app.state.config.OPENAI_API_CONFIGS:
+        api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+            str(idx),
+            request.app.state.config.OPENAI_API_CONFIGS.get(
+                request.app.state.config.OPENAI_API_BASE_URLS[idx] if idx < len(request.app.state.config.OPENAI_API_BASE_URLS) else "", {}
+            ),  # Legacy support
+        ) or {}
+    if not isinstance(api_config, dict):
+        api_config = {}
 
-    prefix_id = api_config.get("prefix_id", None)
+    prefix_id = api_config.get("prefix_id", None) if api_config else None
     if prefix_id:
         payload["model"] = payload["model"].replace(f"{prefix_id}.", "")
 
     # Add user info to the payload if the model is a pipeline
-    if "pipeline" in model and model.get("pipeline"):
+    if model and "pipeline" in model and model.get("pipeline"):
         payload["user"] = {
             "name": user.name,
             "id": user.id,
@@ -913,7 +929,7 @@ async def generate_chat_completion(
         request, url, key, api_config, metadata, user=user
     )
 
-    if api_config.get("azure", False):
+    if api_config and api_config.get("azure", False):
         api_version = api_config.get("api_version", "2023-03-15-preview")
         request_url, payload = convert_to_azure_payload(url, payload, api_version)
 
