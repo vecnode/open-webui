@@ -1078,6 +1078,173 @@ async def send_chat_message_event_by_id(
 
 
 ############################
+# GetLastChatIdInternal
+# Internal endpoint to get the last chat ID (for conv_xxx mapping)
+# Must be defined before /{id} routes to avoid route conflicts
+############################
+@router.get("/last/internal", response_model=Optional[dict])
+async def get_last_chat_id_internal(
+    request: Request,
+    db: Session = Depends(get_session),
+):
+    """
+    Internal endpoint to get the last chat ID.
+    No user authentication required - for internal service use only.
+    """
+    try:
+        from open_webui.models.chats import Chat
+        # Get the most recently updated chat
+        chat = db.query(Chat).order_by(Chat.updated_at.desc()).first()
+        if chat:
+            return {
+                "chat_id": chat.id,
+                "user_id": chat.user_id,
+            }
+        # Return empty dict instead of None to ensure JSON response
+        return {"chat_id": None, "user_id": None}
+    except Exception as e:
+        log.exception(e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting last chat ID: {str(e)}",
+        )
+
+
+############################
+# AddMessageToChatByIdInternal
+# Internal endpoint for adding messages (user or assistant) without user authentication
+# Must be defined before /{id}/messages/add to avoid route conflicts
+############################
+class AddMessageInternalForm(BaseModel):
+    content: str
+    role: str = "user"  # "user" or "assistant"
+    model: Optional[str] = None  # Optional model name for assistant messages
+
+
+@router.post("/{id}/messages/add/internal", response_model=Optional[dict])
+async def add_message_to_chat_by_id_internal(
+    id: str,
+    form_data: AddMessageInternalForm,
+    request: Request,
+    db: Session = Depends(get_session),
+):
+    """
+    Internal endpoint to add a message (user or assistant) to a chat.
+    No user authentication required - for internal service use only.
+    Emulates the functionality of message_chat.sh script.
+    """
+    # Simple internal auth check - can be enhanced with API key if needed
+    # For now, we'll allow requests from the same Docker network
+    chat = Chats.get_chat_by_id(id, db=db)
+
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    # Validate role
+    if form_data.role not in ["user", "assistant"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Role must be 'user' or 'assistant'",
+        )
+
+    try:
+        import uuid
+        import time
+
+        # Get chat data
+        chat_data = chat.chat or {}
+        history = chat_data.get("history", {})
+        messages = history.get("messages", {})
+
+        # Generate new message ID
+        message_id = str(uuid.uuid4())
+        timestamp = int(time.time())
+
+        # Get the current last message (if any) to set as parent
+        current_id = history.get("currentId")
+        parent_id = None
+
+        if current_id and current_id in messages:
+            parent_id = current_id
+            # Add this new message as a child of the parent
+            if "childrenIds" not in messages[parent_id]:
+                messages[parent_id]["childrenIds"] = []
+            messages[parent_id]["childrenIds"].append(message_id)
+
+        # Create the new message (user or assistant)
+        new_message = {
+            "id": message_id,
+            "role": form_data.role,
+            "content": form_data.content,
+            "parentId": parent_id,
+            "childrenIds": [],
+            "timestamp": timestamp,
+            "done": True,  # Mark as done to prevent input from getting stuck
+        }
+
+        # Add model name for assistant messages
+        if form_data.role == "assistant" and form_data.model:
+            new_message["model"] = form_data.model
+        elif form_data.role == "assistant":
+            new_message["model"] = "Assistant"  # Default model name
+
+        # Add message to history
+        messages[message_id] = new_message
+        history["messages"] = messages
+        history["currentId"] = message_id
+
+        # Update chat data - preserve all existing fields
+        chat_data["history"] = history
+        if "updated_at" not in chat_data:
+            chat_data["updated_at"] = timestamp
+
+        # Update the chat in the database
+        updated_chat = Chats.update_chat_by_id(id, chat_data, db=db)
+
+        if not updated_chat:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update chat",
+            )
+
+        # Emit Socket.IO events for real-time UI updates
+        event_emitter = get_event_emitter(
+            {
+                "user_id": chat.user_id,
+                "chat_id": id,
+                "message_id": message_id,
+            },
+            update_db=False,  # Don't update DB again, we already did
+        )
+
+        if event_emitter:
+            # Emit chat:tags event to trigger full chat refetch (ensures UI updates)
+            await event_emitter(
+                {
+                    "type": "chat:tags",
+                    "data": None,
+                }
+            )
+
+        return {
+            "success": True,
+            "message_id": message_id,
+            "chat_id": id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error adding message: {str(e)}",
+        )
+
+
+############################
 # AddMessageToChatById
 # Internal endpoint for adding messages to chats via API
 ############################
@@ -1209,6 +1376,8 @@ async def add_message_to_chat_by_id(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error adding message: {str(e)}",
         )
+
+
 
 
 ############################
