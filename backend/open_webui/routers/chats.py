@@ -1121,6 +1121,10 @@ class AddMessageInternalForm(BaseModel):
     model: Optional[str] = None  # Optional model name for assistant messages
 
 
+class AddMessageFilesInternalForm(BaseModel):
+    files: list[dict]  # List of file objects: [{"type": "image", "url": "...", "content_type": "...", "name": "..."}]
+
+
 @router.post("/{id}/messages/add/internal", response_model=Optional[dict])
 async def add_message_to_chat_by_id_internal(
     id: str,
@@ -1241,6 +1245,91 @@ async def add_message_to_chat_by_id_internal(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error adding message: {str(e)}",
+        )
+
+
+############################
+# AddFilesToMessageInternal
+# Internal endpoint to add files to an existing message
+############################
+@router.post("/{id}/messages/{message_id}/files/add/internal", response_model=Optional[dict])
+async def add_files_to_message_internal(
+    id: str,
+    message_id: str,
+    form_data: AddMessageFilesInternalForm,
+    request: Request,
+    db: Session = Depends(get_session),
+):
+    """
+    Internal endpoint to add files (e.g., images) to an existing message.
+    No user authentication required - for internal service use only.
+    """
+    chat = Chats.get_chat_by_id(id, db=db)
+
+    if not chat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    try:
+        # Validate files structure
+        if not form_data.files or not isinstance(form_data.files, list):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Files must be a non-empty list",
+            )
+
+        # Add files to the message using the existing method
+        message_files = Chats.add_message_files_by_id_and_message_id(
+            id, message_id, form_data.files
+        )
+
+        if message_files is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Message not found",
+            )
+
+        # Emit Socket.IO events for real-time UI updates
+        event_emitter = get_event_emitter(
+            {
+                "user_id": chat.user_id,
+                "chat_id": id,
+                "message_id": message_id,
+            },
+            update_db=False,
+        )
+
+        if event_emitter:
+            # Emit files event to update the UI
+            await event_emitter(
+                {
+                    "type": "files",
+                    "data": {"files": message_files},
+                }
+            )
+            # Also emit chat:tags to trigger full chat refetch
+            await event_emitter(
+                {
+                    "type": "chat:tags",
+                    "data": None,
+                }
+            )
+
+        return {
+            "success": True,
+            "message_id": message_id,
+            "chat_id": id,
+            "files": message_files,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error adding files to message: {str(e)}",
         )
 
 
