@@ -879,8 +879,9 @@
 {/if}
 
 {#if loaded}
+	<div class="fixed top-0 left-0 w-full h-5 bg-pink-500 z-50"></div>
 	{#if $isApp}
-		<div class="flex flex-row h-screen">
+		<div class="flex flex-row h-[calc(100vh-20px)] mt-5">
 			<AppSidebar />
 
 			<div class="w-full flex-1 max-w-[calc(100%-4.5rem)]">
@@ -888,7 +889,9 @@
 			</div>
 		</div>
 	{:else}
-		<slot />
+		<div class="mt-5">
+			<slot />
+		</div>
 	{/if}
 {/if}
 
